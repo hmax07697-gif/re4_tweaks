@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -58,7 +58,7 @@
       <WarningLevel>Level3</WarningLevel>
       <AdditionalIncludeDirectories>..\settings;..\includes;..\dxvk\include\vulkan\include;..\dxvk\include\spirv\include;..\dxvk\include\libdisplay-info\include\;..\dxvk\include\;..\external;..\external\freetype\include;..\external\ModUtils;..\external\injector\include;..\external\SimpleIni;..\external\spdlog\include;..\external\imgui;..\external\ImGuiFileDialog;..\external\DirectXMath\Inc;..\external\json\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
-      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_SECURE_SCL=0;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -87,7 +87,7 @@ echo | set /p dummyName=#define GIT_BRANCH ^"%VAR%^" &gt;&gt; gitparams.h</Comma
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <AdditionalIncludeDirectories>..\settings;..\includes;..\dxvk\include\vulkan\include;..\dxvk\include\spirv\include;..\dxvk\include\libdisplay-info\include\;..\dxvk\include\;..\external;..\external\freetype\include;..\external\ModUtils;..\external\injector\include;..\external\SimpleIni;..\external\spdlog\include;..\external\imgui;..\external\ImGuiFileDialog;..\external\DirectXMath\Inc;..\external\json\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
-      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_WINDLL;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_SECURE_SCL=0;_WINDLL;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -1115,3 +1115,4 @@ echo | set /p dummyName=#define GIT_BRANCH ^"%VAR%^" &gt;&gt; gitparams.h</Comma
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
 </Project>
+
