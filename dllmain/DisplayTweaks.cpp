@@ -89,11 +89,21 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 	// disabled, otherwise a held arrow key repeats too quickly at high FPS.
 	const bool limitTitleMenu = re4t::cfg->bDisableFramelimiting && TitleWorkPtr() != nullptr;
 
+	// Inventory, map, shop, file and item screens use the same frame-based
+	// input/timer code.  Letting these screens run at the uncapped render rate
+	// makes their cursor and repeat timers run too quickly (the inventory
+	// cursor is especially noticeable at 120 FPS).  The game is paused while
+	// a subscreen is open, so limiting only this loop does not reduce gameplay
+	// performance.
+	const bool limitSubScreen = re4t::cfg->bDisableFramelimiting &&
+		SubScreenWk != nullptr && SubScreenWk->open_flag != SS_OPEN_NULL;
+
 	// Event/cutscene routines in the original PC port use frame-based timing.
 	// Keep those frames at the vanilla 60 Hz cadence even when gameplay is
 	// uncapped, otherwise event tasks can desynchronise or stall at transitions.
 	const bool event60Hz = isAliveEvt_result && gameFramerate != 30;
-	double TargetFrametime = event60Hz ? (1000.0 / 60.0) : (1000.0 / (double)gameFramerate);
+	const bool limitUi60Hz = (limitTitleMenu || limitSubScreen) && gameFramerate != 30;
+	double TargetFrametime = (event60Hz || limitUi60Hz) ? (1000.0 / 60.0) : (1000.0 / (double)gameFramerate);
 
 	double timeElapsed = 0;
 	double timeCurrent = 0;
@@ -107,7 +117,7 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 		timeCurrent = (double)counter.QuadPart / FramelimiterFrequency;
 		timeElapsed = timeCurrent - FramelimiterPrevTicks;
 
-		if (TargetFrametime <= timeElapsed || (re4t::cfg->bDisableFramelimiting && !limitTitleMenu && !event60Hz))
+		if (TargetFrametime <= timeElapsed || (re4t::cfg->bDisableFramelimiting && !limitUi60Hz && !event60Hz))
 			break;
 		else if (TargetFrametime - timeElapsed > 2.0) // > 2ms
 			Sleep(1); // Sleep for ~1ms
