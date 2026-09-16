@@ -136,6 +136,15 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 	// measured frames so the neutral animation does not receive unstable deltas.
 	if (isAliveEvt_result && gameFramerate != 30)
 	{
+		// Event/cutscene logic in the original PC port is authored around a
+		// 60 Hz tick. With the limiter disabled, timeElapsed is otherwise the
+		// real high-refresh frametime (for example ~8.33 ms at 120 Hz), which
+		// makes event timers, subtitles, and animation playback run too fast.
+		// Keep event timing at the vanilla 60 Hz cadence while allowing the
+		// renderer to continue running uncapped.
+		if (re4t::cfg->bDisableFramelimiting && timeElapsed < 1000.0 / 60.0)
+			timeElapsed = 1000.0 / 60.0;
+
 		if (timeElapsed > 33.333333333333333)
 			timeElapsed = 33.333333333333333;
 	}
