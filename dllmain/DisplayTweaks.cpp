@@ -84,6 +84,10 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 	}
 
 	int gameFramerate = GetGameVariableFrameRate();
+	// The title/menu input routines use frame-based repeat behavior. Keep
+	// that loop at the vanilla 60 Hz cadence when the gameplay limiter is
+	// disabled, otherwise a held arrow key repeats too quickly at high FPS.
+	const bool limitTitleMenu = re4t::cfg->bDisableFramelimiting && TitleWorkPtr() != nullptr;
 
 	// Do not force event playback back to 60 FPS here. The original game appears
 	// to have retained this fallback from an older 30/60 FPS-only path, but it
@@ -105,7 +109,7 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 		timeCurrent = (double)counter.QuadPart / FramelimiterFrequency;
 		timeElapsed = timeCurrent - FramelimiterPrevTicks;
 
-		if (TargetFrametime <= timeElapsed || re4t::cfg->bDisableFramelimiting)
+		if (TargetFrametime <= timeElapsed || (re4t::cfg->bDisableFramelimiting && !limitTitleMenu))
 			break;
 		else if (TargetFrametime - timeElapsed > 2.0) // > 2ms
 			Sleep(1); // Sleep for ~1ms
