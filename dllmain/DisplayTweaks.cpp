@@ -143,13 +143,15 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 		isAliveEvt_result = EvtMgr->IsAliveEvt("event/evd/r117s10.evd", 0, AliveEvtType::AliveEvtTypeNormal) == false;
 	}
 
-	// Preserve the event-specific timing behavior. The r117s10 workaround only
-	// clamps unusually long measured frames so the neutral animation does not
-	// receive unstable deltas.
-	if (isAliveEvt_result && gameFramerate != 30)
+	// Event scripts use the vanilla fixed-step cadence.  Even though the
+	// limiter above is targeting 60 Hz, passing the small QPC jitter through
+	// as a dynamic delta can make subtitles, animation completion, and event
+	// task wakeups disagree at scene transitions.  Use the exact vanilla
+	// 60 Hz delta for events; gameplay keeps its existing dynamic-frametime
+	// option below.
+	if (event60Hz)
 	{
-		if (timeElapsed > 33.333333333333333)
-			timeElapsed = 33.333333333333333;
+		timeElapsed = TargetFrametime;
 	}
 	else
 	{
