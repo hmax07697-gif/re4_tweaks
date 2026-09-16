@@ -89,13 +89,11 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 	// disabled, otherwise a held arrow key repeats too quickly at high FPS.
 	const bool limitTitleMenu = re4t::cfg->bDisableFramelimiting && TitleWorkPtr() != nullptr;
 
-	// Do not force event playback back to 60 FPS here. The original game appears
-	// to have retained this fallback from an older 30/60 FPS-only path, but it
-	// defeats the configured target interval whenever an IsAliveEvt is active.
-	// Keep isAliveEvt_result below for the r117s10/chandelier delta-time
-	// workaround; it must not select the global frame-limit target.
-
-	double TargetFrametime = 1000.0 / (double)gameFramerate;
+	// Event/cutscene routines in the original PC port use frame-based timing.
+	// Keep those frames at the vanilla 60 Hz cadence even when gameplay is
+	// uncapped, otherwise event tasks can desynchronise or stall at transitions.
+	const bool event60Hz = isAliveEvt_result && gameFramerate != 30;
+	double TargetFrametime = event60Hz ? (1000.0 / 60.0) : (1000.0 / (double)gameFramerate);
 
 	double timeElapsed = 0;
 	double timeCurrent = 0;
@@ -109,7 +107,7 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 		timeCurrent = (double)counter.QuadPart / FramelimiterFrequency;
 		timeElapsed = timeCurrent - FramelimiterPrevTicks;
 
-		if (TargetFrametime <= timeElapsed || (re4t::cfg->bDisableFramelimiting && !limitTitleMenu))
+		if (TargetFrametime <= timeElapsed || (re4t::cfg->bDisableFramelimiting && !limitTitleMenu && !event60Hz))
 			break;
 		else if (TargetFrametime - timeElapsed > 2.0) // > 2ms
 			Sleep(1); // Sleep for ~1ms
@@ -135,20 +133,11 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 		isAliveEvt_result = EvtMgr->IsAliveEvt("event/evd/r117s10.evd", 0, AliveEvtType::AliveEvtTypeNormal) == false;
 	}
 
-	// Preserve the event-specific timing behavior without changing the global
-	// target framerate. The r117s10 workaround only clamps unusually long
-	// measured frames so the neutral animation does not receive unstable deltas.
+	// Preserve the event-specific timing behavior. The r117s10 workaround only
+	// clamps unusually long measured frames so the neutral animation does not
+	// receive unstable deltas.
 	if (isAliveEvt_result && gameFramerate != 30)
 	{
-		// Event/cutscene logic in the original PC port is authored around a
-		// 60 Hz tick. With the limiter disabled, timeElapsed is otherwise the
-		// real high-refresh frametime (for example ~8.33 ms at 120 Hz), which
-		// makes event timers, subtitles, and animation playback run too fast.
-		// Keep event timing at the vanilla 60 Hz cadence while allowing the
-		// renderer to continue running uncapped.
-		if (re4t::cfg->bDisableFramelimiting && timeElapsed < 1000.0 / 60.0)
-			timeElapsed = 1000.0 / 60.0;
-
 		if (timeElapsed > 33.333333333333333)
 			timeElapsed = 33.333333333333333;
 	}
