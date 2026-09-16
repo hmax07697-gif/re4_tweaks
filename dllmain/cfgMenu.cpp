@@ -1,4 +1,4 @@
-﻿#include <iostream>
+#include <iostream>
 #include "dllmain.h"
 #include "Patches.h"
 #include "Settings.h"
@@ -1427,6 +1427,24 @@ void cfgMenuRender()
 						ImGui::TextWrapped("(experimental, not known if the new framelimiter performs the same as the old one yet)");
 					}
 
+					// FixTaskSleepHighFramerate
+					if ((OptionsFilter.PassFilter("FixTaskSleepHighFramerate") && OptionsFilter.IsActive()) || !OptionsFilter.IsActive())
+					{
+						ImGui_ColumnSwitch();
+
+						if (ImGui::Checkbox("FixTaskSleepHighFramerate", &re4t::cfg->bFixTaskSleepHighFramerate))
+						{
+							re4t::cfg->HasUnsavedChanges = true;
+							NeedsToRestart = true;
+						}
+
+						ImGui_ItemSeparator();
+
+						ImGui::Dummy(ImVec2(10, 10 * esHook._cur_monitor_dpi));
+						ImGui::TextWrapped("Experimental fix for TaskSleep scheduler hangs when using high or variable framerates.");
+						ImGui::TextWrapped("Requires ReplaceFramelimiter and a restart.");
+					}
+
 					// MultithreadFix
 					if ((OptionsFilter.PassFilter("MultithreadFix") && OptionsFilter.IsActive()) || !OptionsFilter.IsActive())
 					{
@@ -2220,3 +2238,4 @@ void ShowCfgMenuTip()
 		ImGui::End();
 	}
 }
+

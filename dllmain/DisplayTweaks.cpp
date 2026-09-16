@@ -85,10 +85,11 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 
 	int gameFramerate = GetGameVariableFrameRate();
 
-	// The games IsAliveEvt check seems to (indirectly) result in framelimiter loop limiting to 60FPS
-	// maybe a remnant of some time when more framerate options were available?
-	if (isAliveEvt_result && gameFramerate != 30)
-		gameFramerate = 60;
+	// Do not force event playback back to 60 FPS here. The original game appears
+	// to have retained this fallback from an older 30/60 FPS-only path, but it
+	// defeats the configured target interval whenever an IsAliveEvt is active.
+	// Keep isAliveEvt_result below for the r117s10/chandelier delta-time
+	// workaround; it must not select the global frame-limit target.
 
 	double TargetFrametime = 1000.0 / (double)gameFramerate;
 
@@ -130,9 +131,9 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 		isAliveEvt_result = EvtMgr->IsAliveEvt("event/evd/r117s10.evd", 0, AliveEvtType::AliveEvtTypeNormal) == false;
 	}
 
-	// Not really sure what the second part of IsAliveEvt check is doing
-	// Seems to skip setting timeElapsed to the fixed FramelimiterTargetFrametime at least
-	// Guess that means the true timeElapsed gets passed to the game? (after being limited to 60 like above)
+	// Preserve the event-specific timing behavior without changing the global
+	// target framerate. The r117s10 workaround only clamps unusually long
+	// measured frames so the neutral animation does not receive unstable deltas.
 	if (isAliveEvt_result && gameFramerate != 30)
 	{
 		if (timeElapsed > 33.333333333333333)
@@ -487,3 +488,4 @@ void re4t::init::DisplayTweaks()
 		re4t::init::MultithreadFix();
 	}
 }
+

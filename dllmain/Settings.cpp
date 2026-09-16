@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
@@ -254,6 +254,7 @@ void ReadSettingsIni(std::wstring ini_path, setType type)
 		re4t::cfg->bFixAshleyBustPhysics = ini.getBool("FRAME RATE", "FixAshleyBustPhysics", re4t::cfg->bFixAshleyBustPhysics);
 		re4t::cfg->bEnableFastMath = ini.getBool("FRAME RATE", "EnableFastMath", re4t::cfg->bEnableFastMath);
 		re4t::cfg->bReplaceFramelimiter = ini.getBool("FRAME RATE", "ReplaceFramelimiter", re4t::cfg->bReplaceFramelimiter);
+		re4t::cfg->bFixTaskSleepHighFramerate = ini.getBool("FRAME RATE", "FixTaskSleepHighFramerate", re4t::cfg->bFixTaskSleepHighFramerate);
 		re4t::cfg->bMultithreadFix = ini.getBool("FRAME RATE", "MultithreadFix", re4t::cfg->bMultithreadFix);
 		re4t::cfg->bPrecacheModels = ini.getBool("FRAME RATE", "PrecacheModels", re4t::cfg->bPrecacheModels);
 
@@ -705,6 +706,7 @@ void re4t_cfg::WriteSettings(bool trainerOnly)
 		ini.setBool("FRAME RATE", "FixAshleyBustPhysics", re4t::cfg->bFixAshleyBustPhysics);
 		ini.setBool("FRAME RATE", "EnableFastMath", re4t::cfg->bEnableFastMath);
 		ini.setBool("FRAME RATE", "ReplaceFramelimiter", re4t::cfg->bReplaceFramelimiter);
+		ini.setBool("FRAME RATE", "FixTaskSleepHighFramerate", re4t::cfg->bFixTaskSleepHighFramerate);
 		ini.setBool("FRAME RATE", "MultithreadFix", re4t::cfg->bMultithreadFix);
 		ini.setBool("FRAME RATE", "PrecacheModels", re4t::cfg->bPrecacheModels);
 
@@ -1057,6 +1059,7 @@ void re4t_cfg::LogSettings()
 	spd::log()->info("| {:<30} | {:>15} |", "FixAshleyBustPhysics", re4t::cfg->bFixAshleyBustPhysics ? "true" : "false");
 	spd::log()->info("| {:<30} | {:>15} |", "EnableFastMath", re4t::cfg->bEnableFastMath ? "true" : "false");
 	spd::log()->info("| {:<30} | {:>15} |", "ReplaceFramelimiter", re4t::cfg->bReplaceFramelimiter ? "true" : "false");
+	spd::log()->info("| {:<30} | {:>15} |", "FixTaskSleepHighFramerate", re4t::cfg->bFixTaskSleepHighFramerate ? "true" : "false");
 	spd::log()->info("| {:<30} | {:>15} |", "MultithreadFix", re4t::cfg->bMultithreadFix ? "true" : "false");
 	spd::log()->info("| {:<30} | {:>15} |", "PrecacheModels", re4t::cfg->bPrecacheModels ? "true" : "false");
 	spd::log()->info("+--------------------------------+-----------------+");
@@ -1232,3 +1235,4 @@ void re4t_cfg::LogSettings()
 	spd::log()->info("| {:<30} | {:>15} |", "EmHPMode", re4t::cfg->iSideEmHPMode);
 	spd::log()->info("+--------------------------------+-----------------+");
 }
+

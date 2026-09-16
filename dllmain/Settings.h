@@ -111,6 +111,7 @@ public:
 	bool bFixAshleyBustPhysics = true;
 	bool bEnableFastMath = true;
 	bool bReplaceFramelimiter = true;
+	bool bFixTaskSleepHighFramerate = false;
 	bool bMultithreadFix = true;
 	bool bPrecacheModels = false;
 
@@ -298,3 +299,4 @@ extern const char* sAshleyCostumeNames[3];
 extern const char* sAdaCostumeNames[4];
 
 extern const char* sGameDifficultyNames[7];
+

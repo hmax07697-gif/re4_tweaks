@@ -57,6 +57,18 @@ void __cdecl OpenBoxMain_hook(int type, bool openedFlag, __int16 seId, int smdId
 
 void re4t::init::FrameRateFixes()
 {
+	// The game's TaskSleep(1) path loads a tiny epsilon into SleepCtr. With a
+	// variable frame delta this can leave short-lived tasks in the scheduler's
+	// sleep state indefinitely. Replace only the matching 1.1.0 instruction
+	// sequence with FLDZ plus padding, preserving the original six-byte span.
+	// This is intentionally opt-in until it has been validated in-game.
+	if (re4t::cfg->bReplaceFramelimiter && re4t::cfg->bFixTaskSleepHighFramerate)
+	{
+		auto pattern = hook::pattern("D9 05 ? ? ? ? D9 5E 0C A1 ? ? ? ? 8A 48 04 80 E1 82");
+		Patch(pattern.count(1).get(0).get<uint8_t>(0), { 0xD9, 0xEE, 0x90, 0x90, 0x90, 0x90 });
+		spd::log()->info("TaskSleep high-framerate compatibility patch applied");
+	}
+
 	// Fix the speed of falling items
 	{
 		// Treasure (emItem_R1_Drop) (Items from bird nests are handled by another function that already has deltaTime_70 applied to it)
@@ -1614,3 +1626,4 @@ void re4t::init::FrameRateFixes()
 
 	spd::log()->info("{} -> FPS fixes applied", __FUNCTION__);
 }
+
