@@ -101,7 +101,7 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 	// Event/cutscene routines in the original PC port use frame-based timing.
 	// Keep those frames at the vanilla 60 Hz cadence even when gameplay is
 	// uncapped, otherwise event tasks can desynchronise or stall at transitions.
-	const bool event60Hz = isAliveEvt_result && gameFramerate != 30;
+	GLOBAL_WK* globalWork = GlobalPtr(); const bool r215EventTransition = globalWork != nullptr && globalWork->curRoomId_4FAC == 0x215 && (globalWork->flags_ROOM_0_174[0] & 0x80000000) != 0; const bool event60Hz = (isAliveEvt_result || r215EventTransition) && gameFramerate != 30;
 	const bool limitUi60Hz = (limitTitleMenu || limitSubScreen) && gameFramerate != 30;
 	double TargetFrametime = (event60Hz || limitUi60Hz) ? (1000.0 / 60.0) : (1000.0 / (double)gameFramerate);
 
