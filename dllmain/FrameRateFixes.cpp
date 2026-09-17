@@ -9,6 +9,74 @@
 
 namespace
 {
+	struct EspTimerState
+	{
+		const uint8_t* owner;
+		float fraction;
+		uint8_t lastSpeed;
+	};
+
+	struct MotionBlendState
+	{
+		const uint8_t* owner;
+		float fraction;
+		uint8_t lastCount;
+	};
+
+	// These tables are deliberately fixed-size: both hooks run on the game's
+	// main thread and must not allocate while the renderer/model code is live.
+	static constexpr std::size_t EspTimerStateCount = 512;
+	static constexpr std::size_t MotionBlendStateCount = 512;
+	EspTimerState EspTimerStates[EspTimerStateCount]{};
+	MotionBlendState MotionBlendStates[MotionBlendStateCount]{};
+
+	EspTimerState* FindEspTimerState(const uint8_t* owner)
+	{
+		for (auto& state : EspTimerStates)
+		{
+			if (state.owner == owner)
+				return &state;
+		}
+
+		for (auto& state : EspTimerStates)
+		{
+			if (state.owner == nullptr)
+			{
+				state.owner = owner;
+				state.fraction = 0.0f;
+				state.lastSpeed = 0;
+				return &state;
+			}
+		}
+
+		return nullptr;
+	}
+
+	MotionBlendState* FindMotionBlendState(const uint8_t* owner, bool create)
+	{
+		for (auto& state : MotionBlendStates)
+		{
+			if (state.owner == owner)
+				return &state;
+		}
+
+		if (!create)
+			return nullptr;
+
+		for (auto& state : MotionBlendStates)
+		{
+			if (state.owner == nullptr)
+			{
+				state.owner = owner;
+				state.fraction = 0.0f;
+				state.lastCount = 0;
+				return &state;
+			}
+		}
+
+		return nullptr;
+	}
+
 	float HighFpsAnimationRate()
 	{
 		if (!re4t::cfg || !re4t::cfg->bUseDynamicFrametime)
@@ -34,24 +102,119 @@ namespace
 		uint8_t* esp = reinterpret_cast<uint8_t*>(thisptr);
 		const bool isShimmer = esp != nullptr && esp[0xF4] != 0;
 		uint8_t originalSpeed = 0;
+		bool speedWasReplaced = false;
 
 		// cEspSystem_TexAnimUpdate is shared by shimmer, laser, bullet-trail,
-		// and smoke ESPs. Only ESP_SHIMMER objects use the +0xF4 mode field;
-		// changing +0xBD for those objects keeps the wall-gem pulse on the
-		// vanilla time base without touching the other effect families.
+		// and smoke ESPs. Its +0xBE/+0xF6 timers are Q5 fixed-point values,
+		// while +0xBD is an integer increment. At high FPS, rounding a scaled
+		// +0xBD back to 1 makes a one-unit animation advance every render and
+		// therefore run twice as fast at 120 Hz. Keep the fractional part in a
+		// side table and feed the original routine an occasionally-zero integer
+		// increment. Non-shimmer ESPs never enter this path.
 		if (isShimmer && re4t::cfg && re4t::cfg->bUseDynamicFrametime)
 		{
 			originalSpeed = esp[0xBD];
-			const int scaledSpeed = int(std::round(float(originalSpeed) * HighFpsAnimationRate()));
-			esp[0xBD] = uint8_t(std::clamp(scaledSpeed, 0, 255));
+			const float rate = HighFpsAnimationRate();
+			if (rate < 0.999f)
+			{
+				if (EspTimerState* state = FindEspTimerState(esp))
+				{
+					if (state->lastSpeed != originalSpeed)
+						state->fraction = 0.0f;
+
+					const float exactSpeed = float(originalSpeed) * rate + state->fraction;
+					const int integerSpeed = int(std::floor(exactSpeed));
+					state->fraction = exactSpeed - float(integerSpeed);
+					state->lastSpeed = originalSpeed;
+					esp[0xBD] = uint8_t(std::clamp(integerSpeed, 0, 255));
+					speedWasReplaced = true;
+				}
+			}
 		}
 
 		const uint32_t result = EspTexAnimUpdate_Orig(thisptr);
 
-		if (isShimmer && re4t::cfg && re4t::cfg->bUseDynamicFrametime)
+		if (speedWasReplaced)
 			esp[0xBD] = originalSpeed;
 
 		return result;
+	};
+
+	struct MotionHokanCountdownHook
+	{
+		void operator()(injector::reg_pack& regs)
+		{
+			uint8_t* motion = reinterpret_cast<uint8_t*>(regs.edx);
+			const float rate = HighFpsAnimationRate();
+
+			// At 60 FPS this is byte-for-byte vanilla. Above 60 FPS, preserve
+			// the countdown's fractional progress so a 10-frame blend takes the
+			// same amount of real time instead of finishing twice as quickly.
+			if (motion == nullptr || rate >= 0.999f)
+			{
+				if (motion != nullptr)
+					--motion[0xC5];
+				return;
+			}
+
+			const uint8_t currentCount = motion[0xC5];
+			MotionBlendState* state = FindMotionBlendState(motion, currentCount != 0);
+			if (currentCount == 0 && (state == nullptr || state->fraction <= 0.0f))
+				return;
+
+			if (state == nullptr)
+			{
+				--motion[0xC5];
+				return;
+			}
+
+			// A changed byte count means the game reset/restarted this blend;
+			// discard the old fractional remainder before continuing.
+			if (state->lastCount != currentCount)
+				state->fraction = 0.0f;
+
+			const float exactCount = float(currentCount) + state->fraction - rate;
+			if (exactCount <= 0.0f)
+			{
+				motion[0xC5] = 0;
+				state->owner = nullptr;
+				state->fraction = 0.0f;
+				return;
+			}
+
+			const int integerCount = int(std::floor(exactCount));
+			motion[0xC5] = uint8_t(std::clamp(integerCount, 0, 255));
+			state->fraction = exactCount - float(integerCount);
+			state->lastCount = motion[0xC5];
+		}
+	};
+
+	struct MotionHokanBlendRatioHook
+	{
+		void operator()(injector::reg_pack& regs)
+		{
+			float blendRatio = *(float*)(regs.ebp - 0x1C);
+			const uint8_t* motion = reinterpret_cast<const uint8_t*>(regs.edx);
+
+			if (motion != nullptr && re4t::cfg && re4t::cfg->bUseDynamicFrametime &&
+				HighFpsAnimationRate() < 0.999f)
+			{
+				for (const auto& state : MotionBlendStates)
+				{
+					if (state.owner == motion && state.lastCount == motion[0xC5])
+					{
+						const uint8_t frameCount = motion[0xC4];
+						if (frameCount != 0)
+							blendRatio -= state.fraction / float(frameCount);
+						break;
+					}
+				}
+			}
+
+			blendRatio = std::clamp(blendRatio, 0.0f, 1.0f);
+			*(float*)(regs.ebp - 0x1C) = blendRatio;
+			_asm { fld blendRatio }
+		}
 	};
 }
 
@@ -121,12 +284,10 @@ void re4t::init::FrameRateFixes()
 		spd::log()->info("TaskSleep high-framerate compatibility patch applied");
 	}
 
-	// cEspSystem_TexAnimUpdate is shared by every ESP effect. Its +0xBD speed
-	// field is temporarily scaled only for ESP_SHIMMER objects (+0xF4 != 0),
-	// which keeps wall-gem shimmer timing correct without changing trails,
-	// smoke, or laser effects. The model blend countdown is left vanilla until
-	// it can be replaced with a continuous interpolation rather than a stepped
-	// byte decrement.
+	// cEspSystem_TexAnimUpdate is shared by every ESP effect. Its integer speed
+	// is paced with a fractional accumulator only for ESP_SHIMMER objects
+	// (+0xF4 != 0), which keeps wall-gem shimmer timing correct without
+	// changing trails, smoke, or laser effects.
 	if (re4t::cfg->bReplaceFramelimiter)
 	{
 		auto pattern = hook::pattern("E9 B7 5D 1F 00");
@@ -135,11 +296,36 @@ void re4t::init::FrameRateFixes()
 			EspTexAnimUpdate_Orig = reinterpret_cast<EspTexAnimUpdateFn>(
 				injector::GetBranchDestination(pattern.get(0).get<uint32_t>(0)).as_int());
 			InjectHook(pattern.get(0).get<uint32_t>(0), EspTexAnimUpdate_Hook, HookType::Jump);
-			spd::log()->info("High-FPS shimmer texture pacing applied; model blend hook disabled; non-shimmer ESP effects left vanilla");
+			spd::log()->info("High-FPS shimmer texture pacing applied; non-shimmer ESP effects left vanilla");
 		}
 		else
 		{
 			spd::log()->warn("High-FPS shimmer pacing pattern not found; leaving ESP animation vanilla");
+		}
+	}
+
+	// cModel_HokanBlendUpdate decrements MOTION_INFO::Hokan_cnt_C5 once per
+	// render. At high FPS that makes character/model transitions complete too
+	// quickly. Keep a fractional virtual countdown and replace the blend ratio
+	// load so the pose interpolation is continuous between byte decrements.
+	if (re4t::cfg->bReplaceFramelimiter)
+	{
+		auto countdownPattern = hook::pattern("FE 8A C5 00 00 00 0F B6 82 C4 00 00 00");
+		auto ratioPattern = hook::pattern("D9 9D 1C FF FF FF D9 85 1C FF FF FF D9 C0 D9 E8 DE E1");
+
+		if (countdownPattern.size() == 1 && ratioPattern.size() == 1)
+		{
+			injector::MakeInline<MotionHokanCountdownHook>(
+				countdownPattern.get(0).get<uint32_t>(0),
+				countdownPattern.get(0).get<uint32_t>(6));
+			injector::MakeInline<MotionHokanBlendRatioHook>(
+				ratioPattern.get(0).get<uint32_t>(6),
+				ratioPattern.get(0).get<uint32_t>(12));
+			spd::log()->info("High-FPS model blend interpolation applied");
+		}
+		else
+		{
+			spd::log()->warn("High-FPS model blend patterns not found; leaving model transitions vanilla");
 		}
 	}
 
