@@ -1,4 +1,6 @@
 #include <iostream>
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include "dllmain.h"
@@ -7,56 +9,6 @@
 
 namespace
 {
-	// A number of the original animation systems advance an integer counter once
-	// per render instead of using GLOBAL_WK::deltaTime_70. At 120 FPS that makes
-	// them run twice as fast. Keep a small fractional remainder per live object so
-	// a 1-frame step becomes 0,1,0,1 at 120 FPS instead of freezing or stuttering.
-	struct HighFpsStepState
-	{
-		const void* owner;
-		uint8_t channel;
-		float remainder;
-	};
-
-	static constexpr size_t HIGH_FPS_STEP_STATE_COUNT = 512;
-	HighFpsStepState highFpsStepStates[HIGH_FPS_STEP_STATE_COUNT] = {};
-
-	HighFpsStepState* FindHighFpsStepState(const void* owner, uint8_t channel)
-	{
-		HighFpsStepState* empty = nullptr;
-		for (HighFpsStepState& state : highFpsStepStates)
-		{
-			if (state.owner == owner && state.channel == channel)
-				return &state;
-			if (empty == nullptr && state.owner == nullptr)
-				empty = &state;
-		}
-
-		if (empty == nullptr)
-		{
-			const uintptr_t hash = reinterpret_cast<uintptr_t>(owner) ^ (uintptr_t(channel) << 4);
-			empty = &highFpsStepStates[(hash >> 4) % HIGH_FPS_STEP_STATE_COUNT];
-		}
-
-		empty->owner = owner;
-		empty->channel = channel;
-		empty->remainder = 0.0f;
-		return empty;
-	}
-
-	void ResetHighFpsStepState(const void* owner, uint8_t channel)
-	{
-		for (HighFpsStepState& state : highFpsStepStates)
-		{
-			if (state.owner == owner && state.channel == channel)
-			{
-				state.owner = nullptr;
-				state.remainder = 0.0f;
-				return;
-			}
-		}
-	}
-
 	float HighFpsAnimationRate()
 	{
 		if (!re4t::cfg || !re4t::cfg->bUseDynamicFrametime)
@@ -74,39 +26,33 @@ namespace
 		return globalWork->deltaTime_70 * 2.0f;
 	}
 
-	uint16_t ScaleHighFpsAnimationStep(const void* owner, uint8_t channel, uint16_t vanillaStep)
+	using EspTexAnimUpdateFn = uint32_t(__fastcall*)(void* thisptr);
+	EspTexAnimUpdateFn EspTexAnimUpdate_Orig = nullptr;
+
+	uint32_t __fastcall EspTexAnimUpdate_Hook(void* thisptr)
 	{
-		const float rate = HighFpsAnimationRate();
-		if (rate >= 1.0f)
+		uint8_t* esp = reinterpret_cast<uint8_t*>(thisptr);
+		const bool isShimmer = esp != nullptr && esp[0xF4] != 0;
+		uint8_t originalSpeed = 0;
+
+		// cEspSystem_TexAnimUpdate is shared by shimmer, laser, bullet-trail,
+		// and smoke ESPs. Only ESP_SHIMMER objects use the +0xF4 mode field;
+		// changing +0xBD for those objects keeps the wall-gem pulse on the
+		// vanilla time base without touching the other effect families.
+		if (isShimmer && re4t::cfg && re4t::cfg->bUseDynamicFrametime)
 		{
-			ResetHighFpsStepState(owner, channel);
-			return vanillaStep;
+			originalSpeed = esp[0xBD];
+			const int scaledSpeed = int(std::round(float(originalSpeed) * HighFpsAnimationRate()));
+			esp[0xBD] = uint8_t(std::clamp(scaledSpeed, 0, 255));
 		}
 
-		HighFpsStepState* state = FindHighFpsStepState(owner, channel);
-		const float exactStep = (float(vanillaStep) * rate) + state->remainder;
-		const uint32_t wholeStep = exactStep > 0.0f ? uint32_t(exactStep) : 0;
-		state->remainder = exactStep - float(wholeStep);
-		return wholeStep > 0xFFFF ? 0xFFFF : uint16_t(wholeStep);
-	}
+		const uint32_t result = EspTexAnimUpdate_Orig(thisptr);
 
-	struct MotionHokanCountdownHook
-	{
-		void operator()(injector::reg_pack& regs)
-		{
-			// EDX is the MOTION_INFO pointer at this DEC instruction. The
-			// original instruction's flags are not consumed by the following code.
-			uint8_t* hokanCount = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(regs.edx) + 0xC5);
-			const uint8_t decrement = uint8_t(ScaleHighFpsAnimationStep(reinterpret_cast<const void*>(static_cast<uintptr_t>(regs.edx)), 3, 1));
-			*hokanCount = uint8_t(*hokanCount - decrement);
-		}
+		if (isShimmer && re4t::cfg && re4t::cfg->bUseDynamicFrametime)
+			esp[0xBD] = originalSpeed;
+
+		return result;
 	};
-
-	// ESP frame and phase counters are intentionally left at their original
-	// cadence. These fields are shared by laser trails, bullet trails, smoke,
-	// and shimmer renderers; changing them without a per-effect update model
-	// corrupts the visual effects even when the presentation rate is capped.
-
 }
 
 uint32_t ModelForceRenderAll_EndTick = 0;
@@ -175,17 +121,26 @@ void re4t::init::FrameRateFixes()
 		spd::log()->info("TaskSleep high-framerate compatibility patch applied");
 	}
 
-	// Keep the integer counters used by model blending and ESP texture/effect
-	// animation on the same 30-frame-per-second time base as the rest of the
-	// high-FPS gameplay fixes. These are the exact counter updates identified in
-	// bio4.exe by Ghidra; no global slowdown is applied.
+	// cEspSystem_TexAnimUpdate is shared by every ESP effect. Its +0xBD speed
+	// field is temporarily scaled only for ESP_SHIMMER objects (+0xF4 != 0),
+	// which keeps wall-gem shimmer timing correct without changing trails,
+	// smoke, or laser effects. The model blend countdown is left vanilla until
+	// it can be replaced with a continuous interpolation rather than a stepped
+	// byte decrement.
 	if (re4t::cfg->bReplaceFramelimiter)
 	{
-		auto pattern = hook::pattern("FE 8A C5 00 00 00");
+		auto pattern = hook::pattern("E9 B7 5D 1F 00");
 		if (pattern.size() == 1)
-			injector::MakeInline<MotionHokanCountdownHook>(pattern.get(0).get<uint32_t>(0), pattern.get(0).get<uint32_t>(6));
-
-		spd::log()->info("High-FPS model blend pacing applied; ESP effect counters left vanilla");
+		{
+			EspTexAnimUpdate_Orig = reinterpret_cast<EspTexAnimUpdateFn>(
+				injector::GetBranchDestination(pattern.get(0).get<uint32_t>(0)).as_int());
+			InjectHook(pattern.get(0).get<uint32_t>(0), EspTexAnimUpdate_Hook, HookType::Jump);
+			spd::log()->info("High-FPS shimmer texture pacing applied; model blend hook disabled; non-shimmer ESP effects left vanilla");
+		}
+		else
+		{
+			spd::log()->warn("High-FPS shimmer pacing pattern not found; leaving ESP animation vanilla");
+		}
 	}
 
 	// Fix the speed of falling items
