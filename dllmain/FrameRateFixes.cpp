@@ -93,8 +93,8 @@ namespace
 		{
 			// EDX is the MOTION_INFO pointer at this DEC instruction. The
 			// original instruction's flags are not consumed by the following code.
-			uint8_t* hokanCount = reinterpret_cast<uint8_t*>(regs.edx + 0xC5);
-			const uint8_t decrement = uint8_t(ScaleHighFpsAnimationStep(regs.edx, 3, 1));
+			uint8_t* hokanCount = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(regs.edx) + 0xC5);
+			const uint8_t decrement = uint8_t(ScaleHighFpsAnimationStep(reinterpret_cast<const void*>(static_cast<uintptr_t>(regs.edx)), 3, 1));
 			*hokanCount = uint8_t(*hokanCount - decrement);
 		}
 	};
@@ -103,8 +103,8 @@ namespace
 	{
 		void operator()(injector::reg_pack& regs)
 		{
-			uint16_t* frameCounter = reinterpret_cast<uint16_t*>(regs.esi + 0xBA);
-			const uint16_t increment = ScaleHighFpsAnimationStep(regs.esi, 0, 1);
+			uint16_t* frameCounter = reinterpret_cast<uint16_t*>(static_cast<uintptr_t>(regs.esi) + 0xBA);
+			const uint16_t increment = ScaleHighFpsAnimationStep(reinterpret_cast<const void*>(static_cast<uintptr_t>(regs.esi)), 0, 1);
 			*frameCounter = uint16_t(*frameCounter + increment);
 		}
 	};
@@ -113,8 +113,8 @@ namespace
 	{
 		void operator()(injector::reg_pack& regs)
 		{
-			uint16_t* textureTimer = reinterpret_cast<uint16_t*>(regs.esi + 0xBE);
-			const uint16_t increment = ScaleHighFpsAnimationStep(regs.esi, 1, uint16_t(regs.eax));
+			uint16_t* textureTimer = reinterpret_cast<uint16_t*>(static_cast<uintptr_t>(regs.esi) + 0xBE);
+			const uint16_t increment = ScaleHighFpsAnimationStep(reinterpret_cast<const void*>(static_cast<uintptr_t>(regs.esi)), 1, uint16_t(regs.eax));
 			*textureTimer = uint16_t(*textureTimer + increment);
 		}
 	};
@@ -123,8 +123,8 @@ namespace
 	{
 		void operator()(injector::reg_pack& regs)
 		{
-			uint16_t* textureTimer = reinterpret_cast<uint16_t*>(regs.esi + 0xF6);
-			const uint16_t increment = ScaleHighFpsAnimationStep(regs.esi, 2, uint16_t(regs.eax));
+			uint16_t* textureTimer = reinterpret_cast<uint16_t*>(static_cast<uintptr_t>(regs.esi) + 0xF6);
+			const uint16_t increment = ScaleHighFpsAnimationStep(reinterpret_cast<const void*>(static_cast<uintptr_t>(regs.esi)), 2, uint16_t(regs.eax));
 			*textureTimer = uint16_t(*textureTimer + increment);
 		}
 	};
