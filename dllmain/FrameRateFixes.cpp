@@ -102,26 +102,10 @@ namespace
 		}
 	};
 
-	struct EspFrameCounterHook
-	{
-		void operator()(injector::reg_pack& regs)
-		{
-			uint16_t* frameCounter = reinterpret_cast<uint16_t*>(static_cast<uintptr_t>(regs.esi) + 0xBA);
-			const uint16_t increment = ScaleHighFpsAnimationStep(reinterpret_cast<const void*>(static_cast<uintptr_t>(regs.esi)), 0, 1);
-			*frameCounter = uint16_t(*frameCounter + increment);
-		}
-	};
-
-	struct Esp03PhaseHook
-	{
-		void operator()(injector::reg_pack& regs)
-		{
-			uint8_t* effect = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(regs.esi));
-			const uint8_t phaseAdvance = uint8_t(
-				ScaleHighFpsAnimationStep(effect, 4, 1));
-			effect[0x119] = uint8_t((effect[0x119] + phaseAdvance) & 0x3);
-		}
-	};
+	// ESP frame and phase counters are intentionally left at their original
+	// cadence. These fields are shared by laser trails, bullet trails, smoke,
+	// and shimmer renderers; changing them without a per-effect update model
+	// corrupts the visual effects even when the presentation rate is capped.
 
 }
 
@@ -201,19 +185,7 @@ void re4t::init::FrameRateFixes()
 		if (pattern.size() == 1)
 			injector::MakeInline<MotionHokanCountdownHook>(pattern.get(0).get<uint32_t>(0), pattern.get(0).get<uint32_t>(6));
 
-		pattern = hook::pattern("66 FF 86 BA 00 00 00");
-		for (size_t i = 0; i < pattern.size(); i++)
-			injector::MakeInline<EspFrameCounterHook>(pattern.get(i).get<uint32_t>(0), pattern.get(i).get<uint32_t>(7));
-
-		// cEspSystem_TexAnimUpdate() is reached from the already-scaled ESP
-		// update cadence. Its +0xBE/+0xF6 timer increments must stay vanilla;
-		// scaling them here would apply the high-FPS correction twice.
-
-		pattern = hook::pattern("88 8E 19 01 00 00");
-		if (pattern.size() == 1)
-			injector::MakeInline<Esp03PhaseHook>(pattern.get(0).get<uint32_t>(0), pattern.get(0).get<uint32_t>(6));
-
-		spd::log()->info("High-FPS model blend and ESP effect pacing applied");
+		spd::log()->info("High-FPS model blend pacing applied; ESP effect counters left vanilla");
 	}
 
 	// Fix the speed of falling items
