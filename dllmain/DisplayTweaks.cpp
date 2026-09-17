@@ -101,7 +101,18 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 	// Event/cutscene routines in the original PC port use frame-based timing.
 	// Keep those frames at the vanilla 60 Hz cadence even when gameplay is
 	// uncapped, otherwise event tasks can desynchronise or stall at transitions.
-	const bool event60Hz = isAliveEvt_result && gameFramerate != 30;
+	// The R215 Salazar event sequence can remain in its transition wait loop
+	// after IsAliveEvt() has already stopped reporting the event record. Ghidra
+	// shows that this loop is gated by flags_ROOM_0_174[0] bit 0x80000000 and
+	// repeatedly yields until that bit is cleared. Keep the transition on the
+	// vanilla 60 Hz delta while that exact room/event gate is active; otherwise
+	// the first uncapped frame can advance the event state with a 0.25 delta and
+	// strand the phone/scene task at the end of the cutscene.
+	GLOBAL_WK* globalWork = GlobalPtr();
+	const bool r215EventTransition = globalWork != nullptr &&
+		globalWork->curRoomId_4FAC == 0x215 &&
+		(globalWork->flags_ROOM_0_174[0] & 0x80000000) != 0;
+	const bool event60Hz = (isAliveEvt_result || r215EventTransition) && gameFramerate != 30;
 	const bool limitUi60Hz = (limitTitleMenu || limitSubScreen) && gameFramerate != 30;
 	double TargetFrametime = (event60Hz || limitUi60Hz) ? (1000.0 / 60.0) : (1000.0 / (double)gameFramerate);
 
