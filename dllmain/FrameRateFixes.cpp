@@ -16,6 +16,7 @@ namespace
 		const void* owner;
 		uint8_t channel;
 		float remainder;
+		uint16_t lastStep;
 	};
 
 	static constexpr size_t HIGH_FPS_STEP_STATE_COUNT = 512;
@@ -41,7 +42,19 @@ namespace
 		empty->owner = owner;
 		empty->channel = channel;
 		empty->remainder = 0.0f;
+		empty->lastStep = 0;
 		return empty;
+	}
+
+	HighFpsStepState* FindExistingHighFpsStepState(const void* owner, uint8_t channel)
+	{
+		for (HighFpsStepState& state : highFpsStepStates)
+		{
+			if (state.owner == owner && state.channel == channel)
+				return &state;
+		}
+
+		return nullptr;
 	}
 
 	void ResetHighFpsStepState(const void* owner, uint8_t channel)
@@ -52,6 +65,7 @@ namespace
 			{
 				state.owner = nullptr;
 				state.remainder = 0.0f;
+				state.lastStep = 0;
 				return;
 			}
 		}
@@ -84,7 +98,8 @@ namespace
 		const float exactStep = (float(vanillaStep) * rate) + state->remainder;
 		const uint32_t wholeStep = exactStep > 0.0f ? uint32_t(exactStep) : 0;
 		state->remainder = exactStep - float(wholeStep);
-		return wholeStep > 0xFFFF ? 0xFFFF : uint16_t(wholeStep);
+		state->lastStep = wholeStep > 0xFFFF ? 0xFFFF : uint16_t(wholeStep);
+		return state->lastStep;
 	}
 
 	struct MotionHokanCountdownHook
@@ -126,6 +141,26 @@ namespace
 			uint16_t* textureTimer = reinterpret_cast<uint16_t*>(static_cast<uintptr_t>(regs.esi) + 0xF6);
 			const uint16_t increment = ScaleHighFpsAnimationStep(reinterpret_cast<const void*>(static_cast<uintptr_t>(regs.esi)), 2, uint16_t(regs.eax));
 			*textureTimer = uint16_t(*textureTimer + increment);
+		}
+	};
+
+	struct EspShimmerPhaseHook
+	{
+		void operator()(injector::reg_pack& regs)
+		{
+			uint8_t* effect = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(regs.esi));
+			uint8_t phaseAdvance = 1;
+
+			// cEspShimmer cycles four transform/brightness states independently
+			// from its lifetime counter.  The original INC CL ran once per draw,
+			// so it was still twice as fast at 120 FPS after the counter fix.
+			if (HighFpsAnimationRate() < 1.0f)
+			{
+				if (HighFpsStepState* state = FindExistingHighFpsStepState(effect, 0))
+					phaseAdvance = uint8_t(state->lastStep);
+			}
+
+			effect[0x119] = uint8_t((effect[0x119] + phaseAdvance) & 0x3);
 		}
 	};
 }
@@ -218,7 +253,11 @@ void re4t::init::FrameRateFixes()
 		if (pattern.size() == 1)
 			injector::MakeInline<EspMaskTextureTimerHook>(pattern.get(0).get<uint32_t>(0), pattern.get(0).get<uint32_t>(7));
 
-		spd::log()->info("High-FPS model blend and ESP animation pacing applied");
+		pattern = hook::pattern("88 8E 19 01 00 00");
+		if (pattern.size() == 1)
+			injector::MakeInline<EspShimmerPhaseHook>(pattern.get(0).get<uint32_t>(0), pattern.get(0).get<uint32_t>(6));
+
+		spd::log()->info("High-FPS model blend, ESP animation, and shimmer pacing applied");
 	}
 
 	// Fix the speed of falling items

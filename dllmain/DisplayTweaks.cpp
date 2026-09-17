@@ -174,6 +174,19 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 			timeElapsed = TargetFrametime;
 	}
 
+	// A screenshot, pause, focus change, or debugger break can leave the game
+	// thread parked for much longer than one frame.  Passing that entire QPC
+	// interval to the original frame-based effect code makes smoke, fades, and
+	// other short-lived ESP effects advance several logical frames at once.
+	// Keep normal dynamic timing, but prevent a stalled render from expiring an
+	// effect or skipping its visible fade in a single update.
+	if (re4t::cfg->bUseDynamicFrametime && !event60Hz)
+	{
+		constexpr double MaxDynamicFrametime = 33.333333333333333;
+		if (timeElapsed > MaxDynamicFrametime)
+			timeElapsed = MaxDynamicFrametime;
+	}
+
 	GlobalPtr()->deltaTime_70 = float((timeElapsed / 1000) * 30.0);
 
 	SetThreadAffinityMask(curThread, prevAffinityMask);
