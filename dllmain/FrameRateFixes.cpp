@@ -1,7 +1,134 @@
 #include <iostream>
+#include <cstddef>
+#include <cstdint>
 #include "dllmain.h"
 #include "Game.h"
 #include "Settings.h"
+
+namespace
+{
+	// A number of the original animation systems advance an integer counter once
+	// per render instead of using GLOBAL_WK::deltaTime_70. At 120 FPS that makes
+	// them run twice as fast. Keep a small fractional remainder per live object so
+	// a 1-frame step becomes 0,1,0,1 at 120 FPS instead of freezing or stuttering.
+	struct HighFpsStepState
+	{
+		const void* owner;
+		uint8_t channel;
+		float remainder;
+	};
+
+	static constexpr size_t HIGH_FPS_STEP_STATE_COUNT = 512;
+	HighFpsStepState highFpsStepStates[HIGH_FPS_STEP_STATE_COUNT] = {};
+
+	HighFpsStepState* FindHighFpsStepState(const void* owner, uint8_t channel)
+	{
+		HighFpsStepState* empty = nullptr;
+		for (HighFpsStepState& state : highFpsStepStates)
+		{
+			if (state.owner == owner && state.channel == channel)
+				return &state;
+			if (empty == nullptr && state.owner == nullptr)
+				empty = &state;
+		}
+
+		if (empty == nullptr)
+		{
+			const uintptr_t hash = reinterpret_cast<uintptr_t>(owner) ^ (uintptr_t(channel) << 4);
+			empty = &highFpsStepStates[(hash >> 4) % HIGH_FPS_STEP_STATE_COUNT];
+		}
+
+		empty->owner = owner;
+		empty->channel = channel;
+		empty->remainder = 0.0f;
+		return empty;
+	}
+
+	void ResetHighFpsStepState(const void* owner, uint8_t channel)
+	{
+		for (HighFpsStepState& state : highFpsStepStates)
+		{
+			if (state.owner == owner && state.channel == channel)
+			{
+				state.owner = nullptr;
+				state.remainder = 0.0f;
+				return;
+			}
+		}
+	}
+
+	float HighFpsAnimationRate()
+	{
+		if (!re4t::cfg || !re4t::cfg->bUseDynamicFrametime)
+			return 1.0f;
+
+		GLOBAL_WK* globalWork = GlobalPtr();
+		if (globalWork == nullptr || globalWork->deltaTime_70 >= 0.5f)
+			return 1.0f;
+		if (globalWork->deltaTime_70 <= 0.0f)
+			return 0.0f;
+
+		return globalWork->deltaTime_70 * 2.0f;
+	}
+
+	uint16_t ScaleHighFpsAnimationStep(const void* owner, uint8_t channel, uint16_t vanillaStep)
+	{
+		const float rate = HighFpsAnimationRate();
+		if (rate >= 1.0f)
+		{
+			ResetHighFpsStepState(owner, channel);
+			return vanillaStep;
+		}
+
+		HighFpsStepState* state = FindHighFpsStepState(owner, channel);
+		const float exactStep = (float(vanillaStep) * rate) + state->remainder;
+		const uint32_t wholeStep = exactStep > 0.0f ? uint32_t(exactStep) : 0;
+		state->remainder = exactStep - float(wholeStep);
+		return wholeStep > 0xFFFF ? 0xFFFF : uint16_t(wholeStep);
+	}
+
+	struct MotionHokanCountdownHook
+	{
+		void operator()(injector::reg_pack& regs)
+		{
+			// EDX is the MOTION_INFO pointer at this DEC instruction. The
+			// original instruction's flags are not consumed by the following code.
+			uint8_t* hokanCount = reinterpret_cast<uint8_t*>(regs.edx + 0xC5);
+			const uint8_t decrement = uint8_t(ScaleHighFpsAnimationStep(regs.edx, 3, 1));
+			*hokanCount = uint8_t(*hokanCount - decrement);
+		}
+	};
+
+	struct EspFrameCounterHook
+	{
+		void operator()(injector::reg_pack& regs)
+		{
+			uint16_t* frameCounter = reinterpret_cast<uint16_t*>(regs.esi + 0xBA);
+			const uint16_t increment = ScaleHighFpsAnimationStep(regs.esi, 0, 1);
+			*frameCounter = uint16_t(*frameCounter + increment);
+		}
+	};
+
+	struct EspTextureTimerHook
+	{
+		void operator()(injector::reg_pack& regs)
+		{
+			uint16_t* textureTimer = reinterpret_cast<uint16_t*>(regs.esi + 0xBE);
+			const uint16_t increment = ScaleHighFpsAnimationStep(regs.esi, 1, uint16_t(regs.eax));
+			*textureTimer = uint16_t(*textureTimer + increment);
+		}
+	};
+
+	struct EspMaskTextureTimerHook
+	{
+		void operator()(injector::reg_pack& regs)
+		{
+			uint16_t* textureTimer = reinterpret_cast<uint16_t*>(regs.esi + 0xF6);
+			const uint16_t increment = ScaleHighFpsAnimationStep(regs.esi, 2, uint16_t(regs.eax));
+			*textureTimer = uint16_t(*textureTimer + increment);
+		}
+	};
+}
 
 uint32_t ModelForceRenderAll_EndTick = 0;
 
@@ -67,6 +194,31 @@ void re4t::init::FrameRateFixes()
 		auto pattern = hook::pattern("D9 05 ? ? ? ? D9 5E 0C A1 ? ? ? ? 8A 48 04 80 E1 82");
 		Patch(pattern.count(1).get(0).get<uint8_t>(0), { 0xD9, 0xEE, 0x90, 0x90, 0x90, 0x90 });
 		spd::log()->info("TaskSleep high-framerate compatibility patch applied");
+	}
+
+	// Keep the integer counters used by model blending and ESP texture/effect
+	// animation on the same 30-frame-per-second time base as the rest of the
+	// high-FPS gameplay fixes. These are the exact counter updates identified in
+	// bio4.exe by Ghidra; no global slowdown is applied.
+	if (re4t::cfg->bReplaceFramelimiter)
+	{
+		auto pattern = hook::pattern("FE 8A C5 00 00 00");
+		if (pattern.size() == 1)
+			injector::MakeInline<MotionHokanCountdownHook>(pattern.get(0).get<uint32_t>(0), pattern.get(0).get<uint32_t>(6));
+
+		pattern = hook::pattern("66 FF 86 BA 00 00 00");
+		for (size_t i = 0; i < pattern.size(); i++)
+			injector::MakeInline<EspFrameCounterHook>(pattern.get(i).get<uint32_t>(0), pattern.get(i).get<uint32_t>(7));
+
+		pattern = hook::pattern("66 01 86 BE 00 00 00");
+		if (pattern.size() == 1)
+			injector::MakeInline<EspTextureTimerHook>(pattern.get(0).get<uint32_t>(0), pattern.get(0).get<uint32_t>(7));
+
+		pattern = hook::pattern("66 01 86 F6 00 00 00");
+		if (pattern.size() == 1)
+			injector::MakeInline<EspMaskTextureTimerHook>(pattern.get(0).get<uint32_t>(0), pattern.get(0).get<uint32_t>(7));
+
+		spd::log()->info("High-FPS model blend and ESP animation pacing applied");
 	}
 
 	// Fix the speed of falling items

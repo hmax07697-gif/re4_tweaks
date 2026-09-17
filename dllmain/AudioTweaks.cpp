@@ -4,6 +4,7 @@
 #include "Game.h"
 #include "Settings.h"
 #include "AudioTweaks.h"
+#include "ConsoleWnd.h"
 
 void(__cdecl* Snd_set_system_vol)(char flg, int16_t vol);
 void __cdecl Snd_set_system_vol_Hook(char flg, int16_t vol)
@@ -92,10 +93,58 @@ uint32_t __cdecl knife_r3_fire10_SndCall_Hook(uint16_t blk, uint16_t call_no, Ve
 	return bio4::SndCall(blk, call_no, pos, id, flag, pMod);
 }
 
+// SndCall is reached once per game simulation step at 60 FPS, but can be
+// reached multiple times for the same effect when the render loop is uncapped.
+// Keep identical calls from the same call-site/model inside one vanilla 30 FPS
+// audio slice so footsteps and other positional SFX do not stack in volume.
+uint32_t __cdecl SndCall_Hook(uint16_t blk, uint16_t call_no, Vec* pos, uint8_t id, uint32_t flag, cModel* pMod)
+{
+	extern double FramelimiterPrevTicks;
+
+	static re4t::AudioTweaks::SndSlice slice;
+	static double last_tick = 0.0;
+
+	const double now = FramelimiterPrevTicks;
+	if ((now - last_tick) >= (1000.0 / 30.0))
+	{
+		slice.count = 0;
+		last_tick = now;
+	}
+
+	void* ret_addr = _ReturnAddress();
+	if (re4t::AudioTweaks::SndKey* match = slice.find(ret_addr, blk, call_no, flag, pMod))
+		return match->sndCallHandle;
+
+	if (slice.count >= re4t::AudioTweaks::SndSlice::MAX_ENTRIES)
+	{
+		static bool has_warned = false;
+		if (!has_warned)
+		{
+			has_warned = true;
+#ifdef VERBOSE
+			con.log("SndCall_Hook: exceeded %d entries in a single timeslice!", re4t::AudioTweaks::SndSlice::MAX_ENTRIES);
+#endif
+			spd::log()->info("SndCall_Hook: exceeded {} entries in a single timeslice!", re4t::AudioTweaks::SndSlice::MAX_ENTRIES);
+		}
+		return bio4::SndCall(blk, call_no, pos, id, flag, pMod);
+	}
+
+	uint32_t result = bio4::SndCall(blk, call_no, pos, id, flag, pMod);
+	slice.add({ ret_addr, blk, call_no, pMod, flag, result, now });
+	return result;
+}
+
 void re4t::init::AudioTweaks()
 {
+	// Hook SndCall to prevent duplicate calls within one vanilla 33ms slice.
+	// This uses FramelimiterPrevTicks, so it is only enabled with the replacement
+	// framelimiter that maintains that timestamp.
+	auto pattern = hook::pattern("05 94 00 00 00 50 6A 0C 6A 01 E8");
+	if (re4t::cfg->bReplaceFramelimiter)
+		InjectHook(injector::GetBranchDestination(pattern.count(1).get(0).get<uint32_t>(0xA)).as_int(), SndCall_Hook);
+
 	// Hook Snd_set_system_vol so we can override volume values with our own after game updates them
-	auto pattern = hook::pattern("B8 10 00 00 00 0F B6 55 ? 52 50 E8 ? ? ? ? 83 C4");
+	pattern = hook::pattern("B8 10 00 00 00 0F B6 55 ? 52 50 E8 ? ? ? ? 83 C4");
 	ReadCall(injector::GetBranchDestination(pattern.count(1).get(0).get<uint32_t>(0xB)).as_int(), Snd_set_system_vol);
 	InjectHook(injector::GetBranchDestination(pattern.count(1).get(0).get<uint32_t>(0xB)).as_int(), Snd_set_system_vol_Hook);
 

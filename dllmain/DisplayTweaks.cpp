@@ -96,7 +96,7 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 	// a subscreen is open, so limiting only this loop does not reduce gameplay
 	// performance.
 	const bool limitSubScreen = re4t::cfg->bDisableFramelimiting &&
-		SubScreenWk != nullptr && SubScreenWk->open_flag != SS_OPEN_NULL;
+		SubScreenWk != nullptr && SubScreenWk->open_flag_2C != SS_OPEN_NULL;
 
 	// Event/cutscene routines in the original PC port use frame-based timing.
 	// Keep those frames at the vanilla 60 Hz cadence even when gameplay is
