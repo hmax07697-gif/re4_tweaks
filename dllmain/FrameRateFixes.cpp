@@ -23,12 +23,21 @@ namespace
 		uint8_t lastCount;
 	};
 
+	struct IdMaskTimerState
+	{
+		const uint8_t* owner;
+		float fraction;
+		uint8_t lastPattern;
+	};
+
 	// These tables are deliberately fixed-size: both hooks run on the game's
 	// main thread and must not allocate while the renderer/model code is live.
 	static constexpr std::size_t EspTimerStateCount = 512;
 	static constexpr std::size_t MotionBlendStateCount = 512;
+	static constexpr std::size_t IdMaskTimerStateCount = 1024;
 	EspTimerState EspTimerStates[EspTimerStateCount]{};
 	MotionBlendState MotionBlendStates[MotionBlendStateCount]{};
+	IdMaskTimerState IdMaskTimerStates[IdMaskTimerStateCount]{};
 
 	EspTimerState* FindEspTimerState(const uint8_t* owner)
 	{
@@ -77,6 +86,28 @@ namespace
 		return nullptr;
 	}
 
+	IdMaskTimerState* FindIdMaskTimerState(const uint8_t* owner)
+	{
+		for (auto& state : IdMaskTimerStates)
+		{
+			if (state.owner == owner)
+				return &state;
+		}
+
+		for (auto& state : IdMaskTimerStates)
+		{
+			if (state.owner == nullptr)
+			{
+				state.owner = owner;
+				state.fraction = 0.0f;
+				state.lastPattern = 0;
+				return &state;
+			}
+		}
+
+		return nullptr;
+	}
+
 	float HighFpsAnimationRate()
 	{
 		if (!re4t::cfg || !re4t::cfg->bUseDynamicFrametime)
@@ -100,7 +131,9 @@ namespace
 	uint32_t __fastcall EspTexAnimUpdate_Hook(void* thisptr)
 	{
 		uint8_t* esp = reinterpret_cast<uint8_t*>(thisptr);
-		const bool isShimmer = esp != nullptr && esp[0xF4] != 0;
+		// cEsp::m_Shimmer_type is at +0xEC. +0xF4 is the cEsp vtable,
+		// so testing it classifies every normal ESP effect as a shimmer.
+		const bool isShimmer = esp != nullptr && esp[0xEC] != 0;
 		uint8_t originalSpeed = 0;
 		bool speedWasReplaced = false;
 
@@ -138,6 +171,46 @@ namespace
 			esp[0xBD] = originalSpeed;
 
 		return result;
+	};
+
+	struct IdMaskAnimationHook
+	{
+		void operator()(injector::reg_pack& regs)
+		{
+			uint8_t* id = reinterpret_cast<uint8_t*>(regs.esi);
+			uint8_t currentPattern = id[0x7D];
+			uint8_t nextPattern = uint8_t(currentPattern + 1);
+
+			// idSysMove04() updates the mask pattern with a raw ++. That is
+			// correct at 60 Hz but makes shimmer masks run at the render rate
+			// when the limiter is disabled. Preserve the integer pattern field
+			// and carry the fractional part between renders instead.
+			if (re4t::cfg && re4t::cfg->bUseDynamicFrametime)
+			{
+				const float rate = HighFpsAnimationRate();
+				if (rate < 0.999f)
+				{
+					if (IdMaskTimerState* state = FindIdMaskTimerState(id))
+					{
+						if (state->lastPattern != currentPattern)
+							state->fraction = 0.0f;
+
+						const float exactIncrement = state->fraction + rate;
+						const int integerIncrement = int(std::floor(exactIncrement));
+						state->fraction = exactIncrement - float(integerIncrement);
+						nextPattern = uint8_t(currentPattern + integerIncrement);
+						state->lastPattern = nextPattern;
+					}
+				}
+			}
+
+			// These are the two instructions replaced by the inline hook:
+			// mask_ptn_no = currentPattern; mask_ptn_no = currentPattern + 1.
+			id[0x7B] = currentPattern;
+			id[0x7D] = nextPattern;
+			regs.eax = (regs.eax & 0xFFFFFF00u) | nextPattern;
+			regs.edx = (regs.edx & 0xFFFF0000u) | nextPattern;
+		}
 	};
 
 	struct MotionHokanCountdownHook
@@ -291,7 +364,7 @@ void re4t::init::FrameRateFixes()
 
 	// cEspSystem_TexAnimUpdate is shared by every ESP effect. Its integer speed
 	// is paced with a fractional accumulator only for ESP_SHIMMER objects
-	// (+0xF4 != 0), which keeps wall-gem shimmer timing correct without
+	// (+0xEC != 0), which keeps wall-gem shimmer timing correct without
 	// changing trails, smoke, or laser effects.
 	if (re4t::cfg->bReplaceFramelimiter)
 	{
@@ -306,6 +379,26 @@ void re4t::init::FrameRateFixes()
 		else
 		{
 			spd::log()->warn("High-FPS shimmer pacing pattern not found; leaving ESP animation vanilla");
+		}
+	}
+
+	// idSysMove04() has a separate mask-texture animation path. The PC build's
+	// vanilla code increments ID_UNIT::mask_ptn_no (+0x7D) once per render,
+	// while the primary texture path already uses global delta time. Pace only
+	// that raw increment so ID shimmer masks retain their 60 Hz real-time rate.
+	if (re4t::cfg->bReplaceFramelimiter)
+	{
+		auto pattern = hook::pattern(
+			"8A 46 7D 88 46 7B FE C0 0F B6 D0 88 46 7D 8B 45 F8 66 39 50 08");
+		if (pattern.size() == 1)
+		{
+			injector::MakeInline<IdMaskAnimationHook>(
+				pattern.get(0).get<uint32_t>(0), pattern.get(0).get<uint32_t>(14));
+			spd::log()->info("High-FPS ID shimmer mask pacing applied");
+		}
+		else
+		{
+			spd::log()->warn("High-FPS ID shimmer mask pattern not found; leaving ID animation vanilla");
 		}
 	}
 
