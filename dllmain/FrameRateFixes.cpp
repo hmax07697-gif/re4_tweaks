@@ -193,7 +193,12 @@ namespace
 	{
 		void operator()(injector::reg_pack& regs)
 		{
-			float blendRatio = *(float*)(regs.ebp - 0x1C);
+			// The vanilla instruction at 0x0065f366 is FLD [EBP-0xE4].
+			// This is a signed 32-bit displacement (FF FF FF 1C), not the
+			// nearby local at EBP-0x1C. Reading the latter corrupts the model's
+			// stack locals and can eventually blank the render after movement.
+			constexpr std::ptrdiff_t BlendRatioStackOffset = 0xE4;
+			float blendRatio = *(float*)(regs.ebp - BlendRatioStackOffset);
 			const uint8_t* motion = reinterpret_cast<const uint8_t*>(regs.edx);
 
 			if (motion != nullptr && re4t::cfg && re4t::cfg->bUseDynamicFrametime &&
@@ -212,7 +217,7 @@ namespace
 			}
 
 			blendRatio = std::clamp(blendRatio, 0.0f, 1.0f);
-			*(float*)(regs.ebp - 0x1C) = blendRatio;
+			*(float*)(regs.ebp - BlendRatioStackOffset) = blendRatio;
 			_asm { fld blendRatio }
 		}
 	};
