@@ -311,7 +311,13 @@ void re4t::init::FrameRateFixes()
 	if (re4t::cfg->bReplaceFramelimiter)
 	{
 		auto countdownPattern = hook::pattern("FE 8A C5 00 00 00 0F B6 82 C4 00 00 00");
-		auto ratioPattern = hook::pattern("D9 9D 1C FF FF FF D9 85 1C FF FF FF D9 C0 D9 E8 DE E1");
+		// The shorter ratio sequence also occurs in an unrelated math routine.
+		// Include the preceding FILD/FIDIV and following TEST so this can only
+		// match cModel_HokanBlendUpdate.
+		auto ratioPattern = hook::pattern(
+			"DB 85 24 FF FF FF DA B5 20 FF FF FF "
+			"D9 9D 1C FF FF FF D9 85 1C FF FF FF "
+			"D9 C0 D9 E8 DE E1 D9 9D 18 FF FF FF 85 F6 0F 84");
 
 		if (countdownPattern.size() == 1 && ratioPattern.size() == 1)
 		{
@@ -319,8 +325,8 @@ void re4t::init::FrameRateFixes()
 				countdownPattern.get(0).get<uint32_t>(0),
 				countdownPattern.get(0).get<uint32_t>(6));
 			injector::MakeInline<MotionHokanBlendRatioHook>(
-				ratioPattern.get(0).get<uint32_t>(6),
-				ratioPattern.get(0).get<uint32_t>(12));
+				ratioPattern.get(0).get<uint32_t>(18),
+				ratioPattern.get(0).get<uint32_t>(24));
 			spd::log()->info("High-FPS model blend interpolation applied");
 		}
 		else
