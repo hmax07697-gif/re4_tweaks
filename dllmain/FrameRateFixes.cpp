@@ -389,7 +389,7 @@ void re4t::init::FrameRateFixes()
 	if (re4t::cfg->bReplaceFramelimiter)
 	{
 		auto pattern = hook::pattern(
-			"8A 46 7D 88 46 7B FE C0 0F B6 D0 88 46 7D 8B 45 F8 66 39 50 08");
+			"8A 46 7D 88 46 7B FE C0 0F B6 D0 88 46 7D 8B 45 F8 66 3B 50 08");
 		if (pattern.size() == 1)
 		{
 			injector::MakeInline<IdMaskAnimationHook>(
@@ -404,24 +404,38 @@ void re4t::init::FrameRateFixes()
 
 	// cModel_HokanBlendUpdate decrements MOTION_INFO::Hokan_cnt_C5 once per
 	// render. At high FPS that makes character/model transitions complete too
-	// quickly. Keep a fractional virtual countdown. The tempting follow-up
-	// patch that replaces the x87 blend-ratio load is intentionally disabled:
-	// even with the correct stack offset it can destabilize the game's model
-	// transform/FPU path and blank the render during movement.
+	// quickly. Keep a fractional virtual countdown and interpolate the x87
+	// blend ratio between integer countdown values.
 	if (re4t::cfg->bReplaceFramelimiter)
 	{
 		auto countdownPattern = hook::pattern("FE 8A C5 00 00 00 0F B6 82 C4 00 00 00");
+		// The shorter ratio sequence also occurs in an unrelated math routine.
+		// Include the surrounding Hokan arithmetic so this can only match
+		// cModel_HokanBlendUpdate.
+		auto ratioPattern = hook::pattern(
+			"DB 85 24 FF FF FF DA B5 20 FF FF FF "
+			"D9 9D 1C FF FF FF D9 85 1C FF FF FF "
+			"D9 C0 D9 E8 DE E1 D9 9D 18 FF FF FF 85 F6 0F 84");
 
-		if (countdownPattern.size() == 1)
+		if (countdownPattern.size() == 1 && ratioPattern.size() == 1)
 		{
 			injector::MakeInline<MotionHokanCountdownHook>(
 				countdownPattern.get(0).get<uint32_t>(0),
 				countdownPattern.get(0).get<uint32_t>(6));
-			spd::log()->info("High-FPS model countdown pacing applied; blend ratio left vanilla for stability");
+
+			// Offset 24 is the actual FLD [EBP-0xE4] instruction, after the
+			// preceding FSTP has initialized the ratio local. The old hook used
+			// offset 18 and read that local before it was written, then left the
+			// original FLD in place, which corrupted the x87 stack and could blank
+			// the render after movement.
+			injector::MakeInline<MotionHokanBlendRatioHook>(
+				ratioPattern.get(0).get<uint32_t>(24),
+				ratioPattern.get(0).get<uint32_t>(30));
+			spd::log()->info("High-FPS model blend interpolation applied");
 		}
 		else
 		{
-			spd::log()->warn("High-FPS model countdown pattern not found; leaving model transitions vanilla");
+			spd::log()->warn("High-FPS model blend patterns not found; leaving model transitions vanilla");
 		}
 	}
 
