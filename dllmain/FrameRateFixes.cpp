@@ -262,38 +262,6 @@ namespace
 		}
 	};
 
-	struct MotionHokanBlendRatioHook
-	{
-		void operator()(injector::reg_pack& regs)
-		{
-			// The vanilla instruction at 0x0065f366 is FLD [EBP-0xE4].
-			// This is a signed 32-bit displacement (FF FF FF 1C), not the
-			// nearby local at EBP-0x1C. Reading the latter corrupts the model's
-			// stack locals and can eventually blank the render after movement.
-			constexpr std::ptrdiff_t BlendRatioStackOffset = 0xE4;
-			float blendRatio = *(float*)(regs.ebp - BlendRatioStackOffset);
-			const uint8_t* motion = reinterpret_cast<const uint8_t*>(regs.edx);
-
-			if (motion != nullptr && re4t::cfg && re4t::cfg->bUseDynamicFrametime &&
-				HighFpsAnimationRate() < 0.999f)
-			{
-				for (const auto& state : MotionBlendStates)
-				{
-					if (state.owner == motion && state.lastCount == motion[0xC5])
-					{
-						const uint8_t frameCount = motion[0xC4];
-						if (frameCount != 0)
-							blendRatio -= state.fraction / float(frameCount);
-						break;
-					}
-				}
-			}
-
-			blendRatio = std::clamp(blendRatio, 0.0f, 1.0f);
-			*(float*)(regs.ebp - BlendRatioStackOffset) = blendRatio;
-			_asm { fld blendRatio }
-		}
-	};
 }
 
 uint32_t ModelForceRenderAll_EndTick = 0;
@@ -404,38 +372,23 @@ void re4t::init::FrameRateFixes()
 
 	// cModel_HokanBlendUpdate decrements MOTION_INFO::Hokan_cnt_C5 once per
 	// render. At high FPS that makes character/model transitions complete too
-	// quickly. Keep a fractional virtual countdown and interpolate the x87
-	// blend ratio between integer countdown values.
+	// quickly. Keep only the fractional countdown pacing here. The x87 blend
+	// ratio hook is intentionally not installed because this function's FPU
+	// stack is too fragile in the PC port and can blank the model/render.
 	if (re4t::cfg->bReplaceFramelimiter)
 	{
 		auto countdownPattern = hook::pattern("FE 8A C5 00 00 00 0F B6 82 C4 00 00 00");
-		// The shorter ratio sequence also occurs in an unrelated math routine.
-		// Include the surrounding Hokan arithmetic so this can only match
-		// cModel_HokanBlendUpdate.
-		auto ratioPattern = hook::pattern(
-			"DB 85 24 FF FF FF DA B5 20 FF FF FF "
-			"D9 9D 1C FF FF FF D9 85 1C FF FF FF "
-			"D9 C0 D9 E8 DE E1 D9 9D 18 FF FF FF 85 F6 0F 84");
 
-		if (countdownPattern.size() == 1 && ratioPattern.size() == 1)
+		if (countdownPattern.size() == 1)
 		{
 			injector::MakeInline<MotionHokanCountdownHook>(
 				countdownPattern.get(0).get<uint32_t>(0),
 				countdownPattern.get(0).get<uint32_t>(6));
-
-			// Offset 24 is the actual FLD [EBP-0xE4] instruction, after the
-			// preceding FSTP has initialized the ratio local. The old hook used
-			// offset 18 and read that local before it was written, then left the
-			// original FLD in place, which corrupted the x87 stack and could blank
-			// the render after movement.
-			injector::MakeInline<MotionHokanBlendRatioHook>(
-				ratioPattern.get(0).get<uint32_t>(24),
-				ratioPattern.get(0).get<uint32_t>(30));
-			spd::log()->info("High-FPS model blend interpolation applied");
+			spd::log()->info("High-FPS model countdown pacing applied; x87 blend ratio left vanilla");
 		}
 		else
 		{
-			spd::log()->warn("High-FPS model blend patterns not found; leaving model transitions vanilla");
+			spd::log()->warn("High-FPS model countdown pattern not found; leaving model transitions vanilla");
 		}
 	}
 
