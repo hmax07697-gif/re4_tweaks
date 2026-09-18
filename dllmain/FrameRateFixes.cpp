@@ -311,32 +311,24 @@ void re4t::init::FrameRateFixes()
 
 	// cModel_HokanBlendUpdate decrements MOTION_INFO::Hokan_cnt_C5 once per
 	// render. At high FPS that makes character/model transitions complete too
-	// quickly. Keep a fractional virtual countdown and replace the blend ratio
-	// load so the pose interpolation is continuous between byte decrements.
+	// quickly. Keep a fractional virtual countdown. The tempting follow-up
+	// patch that replaces the x87 blend-ratio load is intentionally disabled:
+	// even with the correct stack offset it can destabilize the game's model
+	// transform/FPU path and blank the render during movement.
 	if (re4t::cfg->bReplaceFramelimiter)
 	{
 		auto countdownPattern = hook::pattern("FE 8A C5 00 00 00 0F B6 82 C4 00 00 00");
-		// The shorter ratio sequence also occurs in an unrelated math routine.
-		// Include the preceding FILD/FIDIV and following TEST so this can only
-		// match cModel_HokanBlendUpdate.
-		auto ratioPattern = hook::pattern(
-			"DB 85 24 FF FF FF DA B5 20 FF FF FF "
-			"D9 9D 1C FF FF FF D9 85 1C FF FF FF "
-			"D9 C0 D9 E8 DE E1 D9 9D 18 FF FF FF 85 F6 0F 84");
 
-		if (countdownPattern.size() == 1 && ratioPattern.size() == 1)
+		if (countdownPattern.size() == 1)
 		{
 			injector::MakeInline<MotionHokanCountdownHook>(
 				countdownPattern.get(0).get<uint32_t>(0),
 				countdownPattern.get(0).get<uint32_t>(6));
-			injector::MakeInline<MotionHokanBlendRatioHook>(
-				ratioPattern.get(0).get<uint32_t>(18),
-				ratioPattern.get(0).get<uint32_t>(24));
-			spd::log()->info("High-FPS model blend interpolation applied");
+			spd::log()->info("High-FPS model countdown pacing applied; blend ratio left vanilla for stability");
 		}
 		else
 		{
-			spd::log()->warn("High-FPS model blend patterns not found; leaving model transitions vanilla");
+			spd::log()->warn("High-FPS model countdown pattern not found; leaving model transitions vanilla");
 		}
 	}
 
