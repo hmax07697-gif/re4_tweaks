@@ -7,6 +7,8 @@
 #include "Game.h"
 #include "Settings.h"
 
+extern float FramelimiterAnimationDeltaTime30;
+
 namespace
 {
 	struct EspTimerState
@@ -110,19 +112,19 @@ namespace
 
 	float HighFpsAnimationRate()
 	{
-		if (!re4t::cfg || !re4t::cfg->bUseDynamicFrametime)
+		if (!re4t::cfg)
 			return 1.0f;
 
-		GLOBAL_WK* globalWork = GlobalPtr();
+		const float deltaTime = FramelimiterAnimationDeltaTime30;
 		// Treat a nominal 60 Hz presentation rate as vanilla. RTSS/QPC
 		// quantization can produce individual samples just below 0.5 here;
 		// scaling those samples makes integer effect counters visibly jitter.
-		if (globalWork == nullptr || globalWork->deltaTime_70 >= 0.49f)
+		if (deltaTime >= 0.49f)
 			return 1.0f;
-		if (globalWork->deltaTime_70 <= 0.0f)
+		if (deltaTime <= 0.0f)
 			return 0.0f;
 
-		return globalWork->deltaTime_70 * 2.0f;
+		return deltaTime * 2.0f;
 	}
 
 	using EspTexAnimUpdateFn = uint32_t(__fastcall*)(void* thisptr);
@@ -144,7 +146,7 @@ namespace
 		// therefore run twice as fast at 120 Hz. Keep the fractional part in a
 		// side table and feed the original routine an occasionally-zero integer
 		// increment. Non-shimmer ESPs never enter this path.
-		if (isShimmer && re4t::cfg && re4t::cfg->bUseDynamicFrametime)
+		if (isShimmer && re4t::cfg)
 		{
 			originalSpeed = esp[0xBD];
 			const float rate = HighFpsAnimationRate();
@@ -185,7 +187,7 @@ namespace
 			// correct at 60 Hz but makes shimmer masks run at the render rate
 			// when the limiter is disabled. Preserve the integer pattern field
 			// and carry the fractional part between renders instead.
-			if (re4t::cfg && re4t::cfg->bUseDynamicFrametime)
+			if (re4t::cfg)
 			{
 				const float rate = HighFpsAnimationRate();
 				if (rate < 0.999f)
@@ -209,7 +211,8 @@ namespace
 			id[0x7B] = currentPattern;
 			id[0x7D] = nextPattern;
 			regs.eax = (regs.eax & 0xFFFFFF00u) | nextPattern;
-			regs.edx = (regs.edx & 0xFFFF0000u) | nextPattern;
+			// Original MOVZX EDX, AL clears the entire upper 24 bits.
+			regs.edx = uint32_t(nextPattern);
 		}
 	};
 
@@ -273,7 +276,7 @@ namespace
 			float blendRatio = *(float*)(regs.ebp - BlendRatioStackOffset);
 			const uint8_t* motion = reinterpret_cast<const uint8_t*>(regs.edx);
 
-			if (motion != nullptr && re4t::cfg && re4t::cfg->bUseDynamicFrametime &&
+			if (motion != nullptr && re4t::cfg &&
 				HighFpsAnimationRate() < 0.999f)
 			{
 				for (const auto& state : MotionBlendStates)

@@ -60,6 +60,9 @@ void __declspec(naked) Esp04TransHook()
 
 double FramelimiterFrequency = 0;
 double FramelimiterPrevTicks = 0;
+// Measured render interval for the few frame-stepped visual/pose timers that
+// need high-FPS pacing even when global dynamic frametime is disabled.
+float FramelimiterAnimationDeltaTime30 = 0.5f;
 void Framelimiter_Hook(uint8_t isAliveEvt_result)
 {
 	// Change thread to core 0 before running QueryPerformance* funcs, game does this, so guess we should too
@@ -138,6 +141,7 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 	while (TargetFrametime > timeElapsed);
 
 	FramelimiterPrevTicks = timeCurrent;
+	const double measuredTimeElapsed = timeElapsed;
 
 	// HACK: workaround for chandelier flicker/shake bug in r117s10 cutscene
 	// during gameplay a chandelier object has a motion animation enabled, afterward object gets left with a neutral animation running
@@ -186,6 +190,16 @@ void Framelimiter_Hook(uint8_t isAliveEvt_result)
 		if (timeElapsed > MaxDynamicFrametime)
 			timeElapsed = MaxDynamicFrametime;
 	}
+
+	// Keep a private measured delta for only the shimmer and model-blend hooks.
+	// The user-facing UseDynamicFrametime option changes many gameplay systems;
+	// these two frame-stepped routines still need render-rate pacing when that
+	// broad option is off. Do not feed this value back into GLOBAL_WK::deltaTime.
+	double animationTimeElapsed = event60Hz ? TargetFrametime : measuredTimeElapsed;
+	constexpr double MaxAnimationFrametime = 33.333333333333333;
+	if (animationTimeElapsed > MaxAnimationFrametime)
+		animationTimeElapsed = MaxAnimationFrametime;
+	FramelimiterAnimationDeltaTime30 = float((animationTimeElapsed / 1000.0) * 30.0);
 
 	GlobalPtr()->deltaTime_70 = float((timeElapsed / 1000) * 30.0);
 
