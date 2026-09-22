@@ -41,6 +41,31 @@ namespace
 	MotionBlendState MotionBlendStates[MotionBlendStateCount]{};
 	IdMaskTimerState IdMaskTimerStates[IdMaskTimerStateCount]{};
 
+	struct AnimationHookProbe
+	{
+		uint32_t calls = 0;
+		uint64_t lastLogMs = 0;
+	};
+
+	AnimationHookProbe EspShimmerProbe;
+	AnimationHookProbe IdMaskProbe;
+	AnimationHookProbe ModelBlendProbe;
+
+	void LogAnimationHookProbe(const char* name, AnimationHookProbe& probe, float rate)
+	{
+		const uint32_t calls = ++probe.calls;
+		if (calls != 1 && (calls & 0xFF) != 0)
+			return;
+
+		const uint64_t nowMs = GetTickCount64();
+		if (calls != 1 && nowMs - probe.lastLogMs < 5000)
+			return;
+
+		probe.lastLogMs = nowMs;
+		spd::log()->info("High-FPS hook probe: {} reached rate={:.4f} animation_delta30={:.4f}",
+			name, rate, FramelimiterAnimationDeltaTime30);
+	}
+
 	EspTimerState* FindEspTimerState(const uint8_t* owner)
 	{
 		for (auto& state : EspTimerStates)
@@ -150,6 +175,7 @@ namespace
 		{
 			originalSpeed = esp[0xBD];
 			const float rate = HighFpsAnimationRate();
+			LogAnimationHookProbe("ESP shimmer", EspShimmerProbe, rate);
 			if (rate < 0.999f)
 			{
 				if (EspTimerState* state = FindEspTimerState(esp))
@@ -190,6 +216,7 @@ namespace
 			if (re4t::cfg)
 			{
 				const float rate = HighFpsAnimationRate();
+				LogAnimationHookProbe("ID mask", IdMaskProbe, rate);
 				if (rate < 0.999f)
 				{
 					if (IdMaskTimerState* state = FindIdMaskTimerState(id))
@@ -222,6 +249,7 @@ namespace
 		{
 			uint8_t* motion = reinterpret_cast<uint8_t*>(regs.edx);
 			const float rate = HighFpsAnimationRate();
+			LogAnimationHookProbe("model blend countdown", ModelBlendProbe, rate);
 
 			// At 60 FPS this is byte-for-byte vanilla. Above 60 FPS, preserve
 			// the countdown's fractional progress so a 10-frame blend takes the
@@ -273,7 +301,9 @@ namespace
 			// FLD ST0/FLD1/FSUBRP instructions must remain in the original x87
 			// sequence; hooking those is what caused the black render.
 			constexpr std::ptrdiff_t BlendRatioStackOffset = 0xE4;
-			float blendRatio = *(float*)(regs.ebp - BlendRatioStackOffset);
+			// This is the normalized remaining-frame count; the original x87 sequence
+			// below converts it to the final blend weight with 1 - x.
+			float remainingFrameRatio = *(float*)(regs.ebp - BlendRatioStackOffset);
 			const uint8_t* motion = reinterpret_cast<const uint8_t*>(regs.edx);
 
 			if (motion != nullptr && re4t::cfg &&
@@ -285,15 +315,15 @@ namespace
 					{
 						const uint8_t frameCount = motion[0xC4];
 						if (frameCount != 0)
-							blendRatio -= state.fraction / float(frameCount);
+							remainingFrameRatio += state.fraction / float(frameCount);
 						break;
 					}
 				}
 			}
 
-			blendRatio = std::clamp(blendRatio, 0.0f, 1.0f);
-			*(float*)(regs.ebp - BlendRatioStackOffset) = blendRatio;
-			_asm { fld blendRatio }
+			remainingFrameRatio = std::clamp(remainingFrameRatio, 0.0f, 1.0f);
+			*(float*)(regs.ebp - BlendRatioStackOffset) = remainingFrameRatio;
+			_asm { fld remainingFrameRatio }
 		}
 	};
 
