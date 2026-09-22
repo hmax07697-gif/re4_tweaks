@@ -23,10 +23,11 @@ namespace
 		const uint8_t* owner;
 		float fraction;
 		uint8_t lastCount;
-		uint64_t diagnosticWindowMs;
-		uint32_t diagnosticCountdownCalls;
-		uint32_t diagnosticRatioMatches;
-		uint32_t diagnosticCountMismatches;
+		uint8_t diagnosticLastRatioCount;
+		uint8_t diagnosticLastMismatchCount;
+		bool diagnosticStarted;
+		bool diagnosticHasRatioCount;
+		bool diagnosticHasMismatchCount;
 	};
 
 	struct IdMaskTimerState
@@ -111,10 +112,11 @@ namespace
 				state.owner = owner;
 				state.fraction = 0.0f;
 				state.lastCount = 0;
-				state.diagnosticWindowMs = 0;
-				state.diagnosticCountdownCalls = 0;
-				state.diagnosticRatioMatches = 0;
-				state.diagnosticCountMismatches = 0;
+				state.diagnosticLastRatioCount = 0;
+				state.diagnosticLastMismatchCount = 0;
+				state.diagnosticStarted = false;
+				state.diagnosticHasRatioCount = false;
+				state.diagnosticHasMismatchCount = false;
 				return &state;
 			}
 		}
@@ -122,47 +124,37 @@ namespace
 		return nullptr;
 	}
 
-	void LogMotionBlendStateProbe(const uint8_t* motion, MotionBlendState* state,
-		uint8_t count, float rate)
+	void LogMotionBlendCountdownEvent(const char* event, const uint8_t* motion,
+		uint8_t frameCount, uint8_t beforeCount, uint8_t afterCount,
+		float beforeFraction, float afterFraction, float rate)
 	{
-		if (state == nullptr)
-			return;
-
-		++state->diagnosticCountdownCalls;
-		// Query the clock sparsely so diagnostics don't add work to every update.
-		if ((state->diagnosticCountdownCalls & 0xFF) != 0)
-			return;
-
-		const uint64_t nowMs = GetTickCount64();
-		if (state->diagnosticWindowMs == 0)
-		{
-			state->diagnosticWindowMs = nowMs;
-			return;
-		}
-
-		if (nowMs - state->diagnosticWindowMs < 1000)
-			return;
-
 		spd::log()->info(
-			"High-FPS model blend detail: motion={} count={}/{} fraction={:.4f} rate={:.4f} countdown_calls={} ratio_matches={} count_mismatches={}",
-			reinterpret_cast<const void*>(motion), count, motion[0xC4], state->fraction, rate,
-			state->diagnosticCountdownCalls, state->diagnosticRatioMatches,
-			state->diagnosticCountMismatches);
-		state->diagnosticWindowMs = nowMs;
-		state->diagnosticCountdownCalls = 0;
-		state->diagnosticRatioMatches = 0;
-		state->diagnosticCountMismatches = 0;
+			"High-FPS model blend {}: motion={} frame_count={} countdown={}->{} fraction={:.4f}->{:.4f} rate={:.4f} animation_delta30={:.4f}",
+			event, reinterpret_cast<const void*>(motion), frameCount, beforeCount,
+			afterCount, beforeFraction, afterFraction, rate, FramelimiterAnimationDeltaTime30);
+	}
+
+	void LogMotionBlendRatioEvent(const char* event, const uint8_t* motion,
+		uint8_t frameCount, uint8_t count, float fraction, float rawRatio,
+		float adjustedRatio, float rate)
+	{
+		spd::log()->info(
+			"High-FPS model blend {}: motion={} frame_count={} countdown={} fraction={:.4f} ratio={:.4f}->{:.4f} rate={:.4f} animation_delta30={:.4f}",
+			event, reinterpret_cast<const void*>(motion), frameCount, count, fraction,
+			rawRatio, adjustedRatio, rate, FramelimiterAnimationDeltaTime30);
 	}
 
 	void LogUntrackedMotionBlendRatio(const uint8_t* motion, float rate)
 	{
 		static uint64_t lastLogMs = 0;
 		static uint32_t calls = 0;
-		if ((++calls & 0xFF) != 0)
+		// This path can run once per rendered model. Sample it sparsely, then
+		// rate-limit globally so untracked objects cannot flood the log.
+		if ((++calls & 0x3F) != 0)
 			return;
 
 		const uint64_t nowMs = GetTickCount64();
-		if (lastLogMs != 0 && nowMs - lastLogMs < 2000)
+		if (lastLogMs != 0 && nowMs - lastLogMs < 500)
 			return;
 
 		lastLogMs = nowMs;
@@ -321,7 +313,6 @@ namespace
 
 			const uint8_t currentCount = motion[0xC5];
 			MotionBlendState* state = FindMotionBlendState(motion, currentCount != 0);
-			LogMotionBlendStateProbe(motion, state, currentCount, rate);
 			if (currentCount == 0 && (state == nullptr || state->fraction <= 0.0f))
 				return;
 
@@ -331,14 +322,29 @@ namespace
 				return;
 			}
 
+			if (!state->diagnosticStarted)
+			{
+				state->diagnosticStarted = true;
+				LogMotionBlendCountdownEvent("start", motion, motion[0xC4],
+					currentCount, currentCount, state->fraction, state->fraction, rate);
+			}
+
 			// A changed byte count means the game reset/restarted this blend;
 			// discard the old fractional remainder before continuing.
 			if (state->lastCount != currentCount)
+			{
+				if (state->lastCount != 0)
+					LogMotionBlendCountdownEvent("count reset", motion, motion[0xC4],
+						state->lastCount, currentCount, state->fraction, 0.0f, rate);
 				state->fraction = 0.0f;
+			}
 
+			const float fractionBefore = state->fraction;
 			const float exactCount = float(currentCount) + state->fraction - rate;
 			if (exactCount <= 0.0f)
 			{
+				LogMotionBlendCountdownEvent("complete", motion, motion[0xC4],
+					currentCount, 0, fractionBefore, 0.0f, rate);
 				motion[0xC5] = 0;
 				state->owner = nullptr;
 				state->fraction = 0.0f;
@@ -349,6 +355,9 @@ namespace
 			motion[0xC5] = uint8_t(std::clamp(integerCount, 0, 255));
 			state->fraction = exactCount - float(integerCount);
 			state->lastCount = motion[0xC5];
+			if (motion[0xC5] != currentCount)
+				LogMotionBlendCountdownEvent("step", motion, motion[0xC4],
+					currentCount, motion[0xC5], fractionBefore, state->fraction, rate);
 		}
 	};
 
@@ -363,6 +372,7 @@ namespace
 			// This is the normalized remaining-frame count; the original x87 sequence
 			// below converts it to the final blend weight with 1 - x.
 			float remainingFrameRatio = *(float*)(regs.ebp - BlendRatioStackOffset);
+			const float rawRemainingFrameRatio = remainingFrameRatio;
 			const uint8_t* motion = reinterpret_cast<const uint8_t*>(regs.edx);
 			const float rate = HighFpsAnimationRate();
 			bool foundState = false;
@@ -378,14 +388,27 @@ namespace
 					foundState = true;
 					if (state.lastCount == motion[0xC5])
 					{
-						++state.diagnosticRatioMatches;
 						const uint8_t frameCount = motion[0xC4];
 						if (frameCount != 0)
 							remainingFrameRatio += state.fraction / float(frameCount);
+						if (!state.diagnosticHasRatioCount ||
+							state.diagnosticLastRatioCount != motion[0xC5])
+						{
+							state.diagnosticHasRatioCount = true;
+							state.diagnosticLastRatioCount = motion[0xC5];
+							LogMotionBlendRatioEvent("ratio matched", motion, frameCount,
+								motion[0xC5], state.fraction, rawRemainingFrameRatio,
+								remainingFrameRatio, rate);
+						}
 					}
-					else
+					else if (!state.diagnosticHasMismatchCount ||
+						state.diagnosticLastMismatchCount != motion[0xC5])
 					{
-						++state.diagnosticCountMismatches;
+						state.diagnosticHasMismatchCount = true;
+						state.diagnosticLastMismatchCount = motion[0xC5];
+						LogMotionBlendRatioEvent("count mismatch", motion, motion[0xC4],
+							motion[0xC5], state.fraction, rawRemainingFrameRatio,
+							remainingFrameRatio, rate);
 					}
 					break;
 				}
