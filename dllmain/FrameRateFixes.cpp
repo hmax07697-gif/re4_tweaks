@@ -23,6 +23,10 @@ namespace
 		const uint8_t* owner;
 		float fraction;
 		uint8_t lastCount;
+		uint64_t diagnosticWindowMs;
+		uint32_t diagnosticCountdownCalls;
+		uint32_t diagnosticRatioMatches;
+		uint32_t diagnosticCountMismatches;
 	};
 
 	struct IdMaskTimerState
@@ -50,6 +54,7 @@ namespace
 	AnimationHookProbe EspShimmerProbe;
 	AnimationHookProbe IdMaskProbe;
 	AnimationHookProbe ModelBlendProbe;
+	AnimationHookProbe ModelBlendRatioProbe;
 
 	void LogAnimationHookProbe(const char* name, AnimationHookProbe& probe, float rate)
 	{
@@ -106,11 +111,64 @@ namespace
 				state.owner = owner;
 				state.fraction = 0.0f;
 				state.lastCount = 0;
+				state.diagnosticWindowMs = 0;
+				state.diagnosticCountdownCalls = 0;
+				state.diagnosticRatioMatches = 0;
+				state.diagnosticCountMismatches = 0;
 				return &state;
 			}
 		}
 
 		return nullptr;
+	}
+
+	void LogMotionBlendStateProbe(const uint8_t* motion, MotionBlendState* state,
+		uint8_t count, float rate)
+	{
+		if (state == nullptr)
+			return;
+
+		++state->diagnosticCountdownCalls;
+		// Query the clock sparsely so diagnostics don't add work to every update.
+		if ((state->diagnosticCountdownCalls & 0xFF) != 0)
+			return;
+
+		const uint64_t nowMs = GetTickCount64();
+		if (state->diagnosticWindowMs == 0)
+		{
+			state->diagnosticWindowMs = nowMs;
+			return;
+		}
+
+		if (nowMs - state->diagnosticWindowMs < 1000)
+			return;
+
+		spd::log()->info(
+			"High-FPS model blend detail: motion={} count={}/{} fraction={:.4f} rate={:.4f} countdown_calls={} ratio_matches={} count_mismatches={}",
+			reinterpret_cast<const void*>(motion), count, motion[0xC4], state->fraction, rate,
+			state->diagnosticCountdownCalls, state->diagnosticRatioMatches,
+			state->diagnosticCountMismatches);
+		state->diagnosticWindowMs = nowMs;
+		state->diagnosticCountdownCalls = 0;
+		state->diagnosticRatioMatches = 0;
+		state->diagnosticCountMismatches = 0;
+	}
+
+	void LogUntrackedMotionBlendRatio(const uint8_t* motion, float rate)
+	{
+		static uint64_t lastLogMs = 0;
+		static uint32_t calls = 0;
+		if ((++calls & 0xFF) != 0)
+			return;
+
+		const uint64_t nowMs = GetTickCount64();
+		if (lastLogMs != 0 && nowMs - lastLogMs < 2000)
+			return;
+
+		lastLogMs = nowMs;
+		spd::log()->info(
+			"High-FPS model blend ratio has no countdown state: motion={} count={}/{} rate={:.4f}",
+			reinterpret_cast<const void*>(motion), motion[0xC5], motion[0xC4], rate);
 	}
 
 	IdMaskTimerState* FindIdMaskTimerState(const uint8_t* owner)
@@ -263,6 +321,7 @@ namespace
 
 			const uint8_t currentCount = motion[0xC5];
 			MotionBlendState* state = FindMotionBlendState(motion, currentCount != 0);
+			LogMotionBlendStateProbe(motion, state, currentCount, rate);
 			if (currentCount == 0 && (state == nullptr || state->fraction <= 0.0f))
 				return;
 
@@ -305,20 +364,34 @@ namespace
 			// below converts it to the final blend weight with 1 - x.
 			float remainingFrameRatio = *(float*)(regs.ebp - BlendRatioStackOffset);
 			const uint8_t* motion = reinterpret_cast<const uint8_t*>(regs.edx);
+			const float rate = HighFpsAnimationRate();
+			bool foundState = false;
 
-			if (motion != nullptr && re4t::cfg &&
-				HighFpsAnimationRate() < 0.999f)
+			if (motion != nullptr && re4t::cfg && rate < 0.999f)
 			{
-				for (const auto& state : MotionBlendStates)
+				LogAnimationHookProbe("model blend ratio", ModelBlendRatioProbe, rate);
+				for (auto& state : MotionBlendStates)
 				{
-					if (state.owner == motion && state.lastCount == motion[0xC5])
+					if (state.owner != motion)
+						continue;
+
+					foundState = true;
+					if (state.lastCount == motion[0xC5])
 					{
+						++state.diagnosticRatioMatches;
 						const uint8_t frameCount = motion[0xC4];
 						if (frameCount != 0)
 							remainingFrameRatio += state.fraction / float(frameCount);
-						break;
 					}
+					else
+					{
+						++state.diagnosticCountMismatches;
+					}
+					break;
 				}
+
+				if (!foundState && motion[0xC5] != 0)
+					LogUntrackedMotionBlendRatio(motion, rate);
 			}
 
 			remainingFrameRatio = std::clamp(remainingFrameRatio, 0.0f, 1.0f);
